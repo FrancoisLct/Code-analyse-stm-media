@@ -13,6 +13,8 @@ library(patchwork)
 library(quanteda.textplots)
 library(quanteda.textstats)
 library(gridExtra)
+library(igraph)
+library(ggrepel)
 
 # ---- 2. IMPORTATION DES DONNÉES ----
 data <- read_excel("C:/Users/francois/Documents/Stm/Base de donnée clean.xlsx")
@@ -23,8 +25,6 @@ names(data) <- gsub("é", "e", names(data))
 names(data) <- gsub("è", "e", names(data))
 names(data) <- gsub("à", "a", names(data))
 
-# Vérification du nom des colonnes
-# print(names(data))
 
 # ---- 3. CONVERSION DE LA DATE ----
 # Renommer correctement la colonne si nécessaire
@@ -57,7 +57,7 @@ text_lemmatized <- lemmatized_text$text
 corp <- corpus(text_lemmatized)
 toks <- tokens(corp, remove_punct = TRUE)
 toks <- tokens_remove(toks, stopwords("fr"))
-toks <- tokens_remove(toks, c("wc", "p", "al", "ceb", "luc", "for", "dr", "agp", "nez", "whire", "beur", "iolig", "etre"))
+toks <- tokens_remove(toks, c("wc", "p", "al", "ceb", "luc", "for", "dr", "agp", "nez", "whire", "beur", "iolig", "etre")) # Adapter en fonction du corpus 
 toks <- tokens_keep(toks, min_nchar = 3)
 
 # ---- 7. CRÉATION DU DFM ET CONVERSION STM ----
@@ -70,13 +70,7 @@ stm_input <- convert(dfm_trimmed, to = "stm")
 meta_data <- data[, c("Identifiant", "Media", "Date", "Originegeographie", "MedianationalGabonais")]
 names(meta_data) <- c("Identifiant", "Media", "Date", "OrigineGeo", "MediaNationalGabonais") 
 stm_input$meta <- meta_data
-stm_input$meta$OrigineGeoSimplifiee <- ifelse(stm_input$meta$OrigineGeo == "Gabon", "Gabonais", "Non-Gabonais")
-
-
-
-
-
-
+stm_input$meta$OrigineGeoSimplifiee <- ifelse(stm_input$meta$OrigineGeo == "Gabon", "Gabonais", "Non-Gabonais") 
 table(stm_input$meta$OrigineGeoSimplifiee)
 
 
@@ -89,50 +83,67 @@ stm_model <- stm(
   K = 10,  # À ajuster selon ton besoin
   init.type = "LDA"
 )
-labelTopics(stm_model, n = 10)
+labelTopics(stm_model, n = 10) #Visualise les 10 mots les plus représentatifs
 
 
 
-# ---- ANALYSE DES CONTRIBUTIONS AU TOPIC PAR ORIGINE ----
-
-topic_num <- 10  # change ici le numéro du topic si besoin
-
-# Extraire les proportions du topic
-topic_prop <- stm_model$theta[, topic_num]
-origines <- stm_input$meta$OrigineGeoSimplifiee
-
-# Créer le dataframe
-contrib_data <- data.frame(OrigineGeo = origines, Proportion = topic_prop)
-
-# Calculer les moyennes par origine
-topic_share <- contrib_data %>%
-  group_by(OrigineGeo) %>%
-  summarise(
-    n_articles = n(),
-    SommeProportion = sum(Proportion),
-    PartTopicSurTotalOrigine = mean(Proportion) * 100
-  ) %>%
-  arrange(desc(PartTopicSurTotalOrigine))
+# - - - - - - - - - - DEUXIEME PARTIE - - - - - - - - - -
 
 
+# ---1. Graphique barres : Moyenne de theta par topic avec noms personnalisés ---
 
-
-# ---- EXTRACTION ET ANALYSE D'UN TOPIC ----
-
-topic_num <- 10  # Choisis ton topic ici
-
-# 1. Trouver les articles les plus représentatifs
-thoughts <- findThoughts(
-  stm_model,
-  texts = data$Content,
-  topics = topic_num,
-  n = 10
+# 1) Moyenne de theta par topic
+theta <- stm_model$theta
+df_bar <- data.frame(
+  Topic = paste0("T", seq_len(ncol(theta))),
+  Mean  = colMeans(theta, na.rm = TRUE)
 )
 
-indices <- thoughts$docs[[1]]
+# 2) Dictionnaire de noms à la place de T1..T10
+topic_labels <- c(
+  "T1"  = "Arrestation",
+  "T2"  = "Recensement",
+  "T3"  = "Braconnage",
+  "T4"  = "Trafic",
+  "T5"  = "Barrière",
+  "T6"  = "Attaque",
+  "T7"  = "Carbonne",
+  "T8"  = "Battue",
+  "T9"  = "Consultation",
+  "T10" = "Déclin"
+)
+
+# 3) Appliquer les libellés tout en conservant l'ordre T1..T10
+df_bar <- df_bar %>%
+  mutate(TopicName = factor(Topic,
+                            levels = names(topic_labels),
+                            labels = unname(topic_labels)))
+
+# 4) Plot (barres noires, valeurs au-dessus) + étiquettes inclinées pour éviter le chevauchement
+p_bar <- ggplot(df_bar, aes(x = TopicName, y = Mean)) +
+  geom_col(fill = "black") +
+  geom_text(aes(label = sprintf("%.3f", Mean)), vjust = -0.5, size = 3) +
+  labs(x = "Topic", y = "Moyenne de theta") +
+  coord_cartesian(ylim = c(0, max(df_bar$Mean) * 1.12)) +
+  scale_x_discrete(guide = guide_axis(angle = 45)) +  # <= évite le chevauchement
+  theme_minimal(base_size = 14) +
+  theme(
+    text = element_text(family = "Trebuchet MS"),
+    axis.title = element_text(face = "bold"),
+    plot.margin = margin(10, 10, 20, 10),            # un peu plus de place en bas
+    axis.text.x = element_text(hjust = 1)            # bon ancrage pour l'angle
+  )
+
+print(p_bar)
 
 
-# 2. Calcul des contributions pondérées par OrigineGeo
+
+# ----2. ANALYSE DES CONTRIBUTIONS AU TOPIC PAR ORIGINE ----
+# - Calcul les moyennes de theta
+
+topic_num <- 10  # changer le numéro du topic si besoin
+
+
 topic_prop <- stm_model$theta[, topic_num]
 origines <- stm_input$meta$OrigineGeoSimplifiee
 
@@ -148,9 +159,7 @@ topic_share <- contrib_data %>%
   ) %>%
   arrange(desc(PartTopicSurTotalOrigine))
 
-print(topic_share)
-
-
+print(topic_share)#Afficher tableau
 
 ggplot(topic_share, aes(x = reorder(OrigineGeo, PartTopicSurTotalOrigine), 
                         y = PartTopicSurTotalOrigine)) +
@@ -167,42 +176,23 @@ ggplot(topic_share, aes(x = reorder(OrigineGeo, PartTopicSurTotalOrigine),
   scale_y_continuous(limits = c(0, max(topic_share$PartTopicSurTotalOrigine) * 1.1))
 
 
-#Evolution des topics dans le temps 
 
-# --- Police Trébuchet (si dispo) ---
-if (requireNamespace("showtext", quietly = TRUE)) {
-  library(showtext)
-  font_add(family = "Trebuchet MS", regular = "Trebuchet MS")
-  showtext_auto()
-}
-
-topic_num <- 10  # <- change ici le topic à tracer
+# ----3. Evolution des topics dans le temps — "Tous médias" uniquement, à partir de 2019
+topic_num <- 6  # <- change ici le topic à tracer
 
 meta <- stm_input$meta
 meta$Proportion <- stm_model$theta[, topic_num]
 meta$DateMois   <- floor_date(meta$Date, unit = "month")
-meta$Groupe     <- ifelse(meta$Media == "L'Union", "L'Union", "Autres")
 
-# 1) Somme des proportions par mois et par groupe (même norme pour tous)
-grp <- meta %>%
-  group_by(DateMois, Groupe) %>%
+# 1) Série "Tous médias" uniquement, filtrée pour commencer en 2019
+tous <- meta %>%
+  filter(DateMois >= as.Date("2019-01-01")) %>%
+  group_by(DateMois) %>%
   summarise(TotalVolume = sum(Proportion, na.rm = TRUE), .groups = "drop")
 
-# 2) Série "Tous médias" calculée avec LA MÊME FORMULE
-tous <- meta %>%
-  group_by(DateMois) %>%
-  summarise(TotalVolume = sum(Proportion, na.rm = TRUE), .groups = "drop") %>%
-  mutate(Groupe = "Tous médias")
-
-evo3 <- bind_rows(grp, tous) %>%
-  mutate(Groupe = factor(Groupe, levels = c("Tous médias","Autres","L'Union")))
-
-# 3) Graphique sans points, uniquement traits
-p3 <- ggplot(evo3, aes(x = DateMois, y = TotalVolume, linetype = Groupe)) +
+# 2) Graphique (même style : lissage loess, trait noir, ligne verticale en 2019)
+p_tous <- ggplot(tous, aes(x = DateMois, y = TotalVolume)) +
   geom_smooth(method = "loess", se = FALSE, color = "black", linewidth = 0.9, span = 0.5) +
-  geom_vline(xintercept = as.Date("2019-01-01"), linetype = "dashed",
-             color = "black", linewidth = 0.3) +
-  scale_linetype_manual(values = c("solid","longdash","dotted"), name = "Série") +
   scale_x_date(date_breaks = "4 months", date_labels = "%b %Y") +
   scale_y_continuous(limits = c(0, 1)) +
   labs(x = "Date", y = "Volume total des contenus liés au topic") +
@@ -213,23 +203,24 @@ p3 <- ggplot(evo3, aes(x = DateMois, y = TotalVolume, linetype = Groupe)) +
     axis.text.x = element_text(angle = 45, hjust = 1),
     axis.title = element_text(face = "bold"),
     panel.grid.minor = element_blank(),
-    legend.title = element_text(face = "bold"),
-    legend.position = "right"
+    legend.position = "none"
   )
 
-print(p3)
+print(p_tous)
 
-# 4) Export vectoriel PDF + SVG
-ggsave("evolution_topic_3courbes.pdf", plot = p3,
+# 3) Export vectoriel PDF + SVG
+ggsave("evolution_topic_tousmedias_2019.pdf", plot = p_tous,
        device = cairo_pdf, width = 180, height = 120, units = "mm", bg = "white")
+
 if (requireNamespace("svglite", quietly = TRUE)) {
-  svglite::svglite("evolution_topic_3courbes.svg", width = 180/25.4, height = 120/25.4)
-  print(p3); dev.off()
+  svglite::svglite("evolution_topic_tousmedias_2019.svg", width = 180/25.4, height = 120/25.4)
+  print(p_tous); dev.off()
 }
 
 
 
 
+# ----4. Proportion moyenne des topics entre L'Union et les autres médias
 
 # Choisir le topic à comparer
 topic_num <- 10
@@ -254,10 +245,9 @@ comparaison_media <- df %>%
     Pourcentage = mean(Proportion) * 100
   )
 
-print(comparaison_media)
+print(comparaison_media) #Afficher tableau
 
-
-
+#Afficher graphique
 ggplot(comparaison_media, aes(x = Media, y = Pourcentage)) +
   geom_col(width = 0.6, fill = "black", show.legend = FALSE) +
   geom_text(aes(label = sprintf("%.1f%%", Pourcentage)), 
@@ -274,7 +264,7 @@ ggplot(comparaison_media, aes(x = Media, y = Pourcentage)) +
 
 
 
-
+# ----5. Test de permutation
 
 topic_num <- 10
 theta <- stm_model$theta[, topic_num]
@@ -322,12 +312,7 @@ ggplot(df_orig, aes(x = Diff)) +
 
 
 
-
-
-
-
-
-# ---- ESTIMATION DES INTERVALLES DE CONFIANCE POUR DEUX VARIABLES ----
+# ----6. ESTIMATION DES INTERVALLES DE CONFIANCE POUR DEUX VARIABLES ----
 
 # 1. Choisir le topic à analyser
 selected_topic <- 10  # Change ici pour le topic que tu veux
@@ -381,140 +366,144 @@ save(stm_model, stm_input, file = "C:/Users/francois/Documents/Stm/modele_stm.RD
 load("C:/Users/francois/Documents/Stm/modele_stm.RData")
 
 
-
-
-
-# ====================== VISU TYPE LDAvis (NIVEAUX DE GRIS, SANS TRAITS) ======================
-if (!requireNamespace("ggplot2", quietly = TRUE)) stop("ggplot2 requis.")
+# ----7. CARTE JS + LIENS + OFFSETS FORTS (numéros fixes) 
 suppressPackageStartupMessages({
   library(ggplot2)
-  library(svglite)
+  have_repel <- requireNamespace("ggrepel", quietly = TRUE)
 })
 
-# 1) Matrices du modèle
-phi <- exp(stm_model$beta$logbeta[[1]])          # K x V
-phi <- sweep(phi, 1, rowSums(phi), "/")          # normalisation par sujet
-theta <- stm_model$theta                         # D x K
-K <- nrow(phi)
-prev <- colMeans(theta)
+# --- Étiquettes MANUELLES par numéro de topic (1..K) ---
+# (Doivent correspondre aux numéros affichés sur la carte)
+# 1=Arrestation, 2=Recensement, 3=Braconnage, 4=Trafic, 5=Barrière,
+# 6=Attaque, 7=Carbone, 8=Battue, 9=Consultation, 10=Déclin
+noms_topics <- c("Arrestation","Recensement","Braconnage","Trafic","Barrière",
+                 "Attaque","Carbone","Battue","Consultation","Déclin")
 
-# 2) Étiquettes : 7 mots FREX / sujet
-frex_mat <- labelTopics(stm_model, n = 7)$frex
-frex_lab <- apply(frex_mat, 1, function(x) paste(x, collapse = ", "))
-
-# 3) Distances inter-sujets (Jensen–Shannon)
-jsd <- function(p, q) { m <- 0.5 * (p + q); 0.5 * sum(p * log(p/m)) + 0.5 * sum(q * log(q/m)) }
-eps <- 1e-12
-phi_eps <- sweep(pmax(phi, eps), 1, rowSums(pmax(phi, eps)), "/")
-
-distJS <- matrix(0, nrow = K, ncol = K)
-if (K >= 2) {
-  pairs <- utils::combn(K, 2)
-  for (c in seq_len(ncol(pairs))) {
-    i <- pairs[1, c]; j <- pairs[2, c]
-    d <- jsd(phi_eps[i, ], phi_eps[j, ])
-    distJS[i, j] <- d; distJS[j, i] <- d
-  }
-}
-
-# 4) Coordonnées 2D : MDS, sinon PCA
-coords <- NULL; mds_ok <- TRUE
-if (K >= 2) {
-  suppressWarnings({
-    tryCatch({
-      mds <- cmdscale(as.dist(distJS), k = 2, eig = TRUE)
-      coords <- as.data.frame(mds$points); names(coords) <- c("Dim1", "Dim2")
-    }, error = function(e) { mds_ok <<- FALSE })
-  })
-}
-if (K < 2 || !mds_ok) {
-  pc <- prcomp(phi_eps, center = TRUE)$x[, 1:2, drop = FALSE]
-  coords <- as.data.frame(pc); names(coords) <- c("Dim1", "Dim2")
-}
+# On suppose que 'distJS' et 'coords' existent déjà (créés plus haut)
+stopifnot(exists("distJS"), exists("coords"))
+K <- nrow(distJS)
+stopifnot(length(noms_topics) >= K)
 
 coords$Sujet <- factor(seq_len(K))
-coords$Prev  <- prev
-coords$Frex  <- frex_lab
+coords$Mot   <- noms_topics[as.integer(coords$Sujet)]
 
-# 5) Plot en niveaux de gris avec ronds (contour noir) et SANS traits ggrepel
-use_repel <- requireNamespace("ggrepel", quietly = TRUE)
+# Taille des points = prévalence (si déjà calculée plus haut sous 'prev', on la reprend)
+if (!exists("prev")) {
+  # prev = prévalence (moyenne de theta par topic) si besoin
+  theta <- stm_model$theta
+  prev  <- colMeans(theta)
+}
+coords$Prev <- prev
 
-p_map <- ggplot(coords, aes(x = Dim1, y = Dim2)) +
-  geom_point(aes(size = Prev), shape = 21, fill = "grey60", color = "black") +  # ronds avec contour noir
-  {if (use_repel) ggrepel::geom_text_repel(
-    aes(label = Sujet),
-    box.padding = 0.3, point.padding = 0.2,
-    size = 4, fontface = "bold", color = "black",
-    max.overlaps = Inf,
+# ----- Paramètres liens -----
+k_neighbors <- 2
+use_quantile <- TRUE
+q_thresh    <- 0.25
+d_thresh    <- 0.50   # ignoré si use_quantile = TRUE
+
+# ----- OFFSETS MANUELS (unités = axes) -----
+num_offsets <- list(
+  `1` = c(x = -0.020, y =  -0.015),
+  `6` = c(x = -0.010, y =  +0.015),
+  `8` = c(x =  +0.025, y =  +0.005),
+  `2` = c(x =  +0.015, y =  +0.000),
+  `7` = c(x =  -0.020, y =  +0.010),
+  `4` = c(x =  -0.010, y =  +0.010),
+  `3` = c(x =  -0.015, y =  -0.010),
+  `5` = c(x =  +0.010, y =  +0.010),
+  `9` = c(x =  +0.015, y =  +0.010),
+  `10` = c(x =  +0.020, y =  +0.000)
+)
+frex_offsets <- list(
+  `1` = c(x = -0.019, y = +0.020),
+  `2` = c(x =  +0.0150, y =  +0.015),
+  `7` = c(x =  +0.010, y =  +0.015),
+  `5` = c(x =  -0.020, y =   -0.000),
+  `8` = c(x =  -0.015, y =   0.015),
+  `10` = c(x =  -0.015, y =  -0.025),
+  `3` = c(x =  -0.045, y =  +0.015),
+  `6` = c(x =  -0.010, y =  -0.015),
+  `9` = c(x =  -0.045, y =  -0.015),
+  `4` = c(x =  -0.010, y =  -0.010)
+)
+
+# ----- Arêtes (réciprocité k-NN + seuil JS) -----
+D <- distJS; diag(D) <- Inf
+A <- matrix(FALSE, nrow = K, ncol = K)
+for (i in 1:K) A[i, head(order(D[i, ]), k_neighbors)] <- TRUE
+A_mut <- A & t(A)
+pairs <- which(A_mut, arr.ind = TRUE); pairs <- pairs[pairs[,1] < pairs[,2], , drop = FALSE]
+
+edges <- data.frame()
+if (nrow(pairs)) {
+  d_vals <- mapply(function(a,b) distJS[a,b], pairs[,1], pairs[,2])
+  d_cut  <- if (use_quantile) unname(quantile(D[upper.tri(D)], q_thresh, na.rm = TRUE)) else d_thresh
+  keep   <- d_vals <= d_cut
+  edges  <- data.frame(i = pairs[keep,1], j = pairs[keep,2], d = d_vals[keep])
+}
+if (nrow(edges)) {
+  ln2 <- log(2)
+  edges$sim  <- pmax(0, 1 - pmin(edges$d, ln2)/ln2)
+  edges$x    <- coords$Dim1[edges$i];  edges$y    <- coords$Dim2[edges$i]
+  edges$xend <- coords$Dim1[edges$j];  edges$yend <- coords$Dim2[edges$j]
+}
+
+# ----- Appliquer offsets -----
+coords$nudge_num_x  <- 0; coords$nudge_num_y  <- 0
+coords$nudge_frex_x <- 0; coords$nudge_frex_y <- 0
+apply_offsets <- function(df, lst, fx, fy){
+  if (length(lst)) for (id in names(lst)) {
+    idx <- which(as.integer(df$Sujet) == as.integer(id))
+    if (length(idx)) { df[idx, fx] <- lst[[id]]["x"]; df[idx, fy] <- lst[[id]]["y"] }
+  }
+  df
+}
+coords <- apply_offsets(coords, num_offsets,  "nudge_num_x",  "nudge_num_y")
+coords <- apply_offsets(coords, frex_offsets, "nudge_frex_x", "nudge_frex_y")
+
+coords_num_fixed  <- transform(coords,  x_lab = Dim1 + nudge_num_x,  y_lab = Dim2 + nudge_num_y)
+coords_frex_start <- transform(coords,  x_lab = Dim1 + nudge_frex_x, y_lab = Dim2 + nudge_frex_y)
+
+# ----- Plot (étiquette = noms_topics, SANS traits de fond) -----
+p_js_links <- ggplot(coords, aes(Dim1, Dim2)) +
+  { if (nrow(edges))
+    geom_segment(data = edges,
+                 aes(x = x, y = y, xend = xend, yend = yend,
+                     linewidth = sim, alpha = sim),
+                 inherit.aes = FALSE, color = "grey25", lineend = "round")
+    else NULL } +
+  scale_linewidth(range = c(0.6, 3.2), guide = "none") +
+  scale_alpha(range = c(0.30, 0.9), guide = "none") +
+  geom_point(aes(size = Prev), shape = 21, fill = "grey60", color = "black") +
+  geom_text(data = coords_num_fixed, aes(x = x_lab, y = y_lab, label = Sujet),
+            size = 4, fontface = "bold", color = "black") +
+  { if (have_repel) ggrepel::geom_text_repel(
+    data = coords_frex_start, aes(x = x_lab, y = y_lab, label = Mot),
+    box.padding = 0.25, point.padding = 0.1, force = 1.5, max.time = 1,
+    size = 3, color = "black", max.overlaps = Inf, seed = 456,
     segment.color = NA, segment.size = 0, min.segment.length = Inf
-  ) else geom_text(aes(label = Sujet), vjust = -1.1, size = 4, fontface = "bold", color = "black")} +
-  {if (use_repel) ggrepel::geom_text_repel(
-    aes(label = Frex),
-    box.padding = 0.2, point.padding = 0.2,
-    size = 3, color = "black",
-    max.overlaps = Inf, nudge_y = 0.02,
-    segment.color = NA, segment.size = 0, min.segment.length = Inf
-  ) else geom_text(aes(label = Frex), vjust = 1.6, size = 3, color = "black")} +
+  ) else geom_text(data = coords_frex_start, aes(x = x_lab, y = y_lab, label = Mot),
+                   size = 3, color = "black", vjust = 1.6) } +
   scale_size_continuous(range = c(3.5, 10), guide = "none") +
-  coord_fixed() +  # ratio 1:1 pour éviter distorsion
-  theme_minimal(base_size = 16) +  # texte plus lisible
+  coord_fixed() +
+  theme_minimal(base_size = 16) +
   theme(
-    panel.grid.minor = element_blank(),
-    panel.grid.major = element_line(color = "grey85"),
+    panel.grid.major = element_blank(),   # retire la grille
+    panel.grid.minor = element_blank(),   # retire la grille
     axis.text  = element_text(color = "black"),
     axis.title = element_text(color = "black"),
     plot.title = element_text(hjust = 0.5, face = "bold")
   ) +
   labs(
-    title = "Carte des sujets (STM) – distances Jensen–Shannon",
-    x = "Dimension 1",
-    y = "Dimension 2"
+    title = "Carte des topics (JS) + liens réciproques",
+    x = "Dimension 1", y = "Dimension 2",
+    caption = if (nrow(edges)) {
+      paste0("Liens : réciprocité k=", k_neighbors, " et distance JS ≤ Q",
+             round(q_thresh*100), "% (",
+             signif(if (exists("d_cut")) d_cut else unname(quantile(D[upper.tri(D)], q_thresh, na.rm = TRUE)), 3),
+             ")")
+    } else "Aucun lien ne satisfait la réciprocité + seuil."
   )
 
-print(p_map)
+print(p_js_links)
 
-# 6) Option : barres de mots p(w|sujet)
-plot_bar_sujet <- function(s, n_terms = 15) {
-  stopifnot(s >= 1, s <= K)
-  pw <- phi[s, ]; ord <- order(pw, decreasing = TRUE)[seq_len(min(n_terms, length(pw)))]
-  vocab <- if (!is.null(stm_model$vocab)) stm_model$vocab else stm_input$vocab
-  df_b <- data.frame(Terme = factor(vocab[ord], levels = rev(vocab[ord])), Proba = pw[ord])
-  ggplot(df_b, aes(x = Terme, y = Proba)) +
-    geom_col(fill = "grey40", width = 0.8) +
-    coord_flip() +
-    theme_minimal(base_size = 13) +
-    theme(
-      panel.grid.minor = element_blank(),
-      panel.grid.major = element_line(color = "grey85"),
-      axis.text  = element_text(color = "black"),
-      axis.title = element_text(color = "black"),
-      plot.title = element_text(hjust = 0.5, face = "bold")
-    ) +
-    labs(title = paste0("Mots les plus probables – Sujet ", s),
-         x = "Terme", y = "p(terme | sujet)")
-}
-
-# 7) Fonctions d'export haute qualité
-export_all <- function(plot, basefile = "carte_sujets", w_mm = 160, h_mm = 120, dpi = 600) {
-  # PDF vectoriel
-  ggplot2::ggsave(paste0(basefile, ".pdf"), plot = plot, device = cairo_pdf,
-                  width = w_mm, height = h_mm, units = "mm", bg = "white")
-  # SVG vectoriel
-  svglite::svglite(paste0(basefile, ".svg"), width = w_mm/25.4, height = h_mm/25.4)
-  print(plot)
-  dev.off()
-  # PNG haute résolution
-  if (requireNamespace("ragg", quietly = TRUE)) {
-    ggplot2::ggsave(paste0(basefile, "_", dpi, "dpi.png"), plot = plot, device = ragg::agg_png,
-                    dpi = dpi, width = w_mm, height = h_mm, units = "mm", bg = "white")
-  } else {
-    warning("Package 'ragg' non installé : PNG exporté avec moteur par défaut")
-    ggplot2::ggsave(paste0(basefile, "_", dpi, "dpi.png"), plot = plot,
-                    dpi = dpi, width = w_mm, height = h_mm, units = "mm", bg = "white")
-  }
-}
-
-# Exemple d'export :
-# export_all(p_map)
-# Exemple de plot bar :
-# print(plot_bar_sujet(1))
